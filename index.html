@@ -127,6 +127,25 @@ code,.mono{font-family:'JetBrains Mono',Monaco,monospace}
 .narrative{padding:18px 20px;background:color-mix(in srgb,var(--acc) 8%,var(--panel));border:1px solid color-mix(in srgb,var(--acc) 30%,transparent);border-left:4px solid var(--acc);border-radius:0 14px 14px 0;font-size:clamp(13px,1.5vw,15px);line-height:1.7;color:var(--text);margin-bottom:18px}
 .narrative strong{color:var(--acc2);font-weight:700}
 
+/* stolen funds banner */
+.stolen-banner{padding:14px 18px;background:linear-gradient(135deg,rgba(239,68,68,.18) 0%,rgba(220,38,38,.10) 100%);border:2px solid var(--bad);border-radius:12px;margin-bottom:18px;font-size:14px;animation:stolen-pulse 2s ease-in-out infinite}
+[data-theme="light"] .stolen-banner{background:linear-gradient(135deg,rgba(220,38,38,.12) 0%,rgba(220,38,38,.06) 100%)}
+@keyframes stolen-pulse{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.5)}50%{box-shadow:0 0 0 6px rgba(239,68,68,0)}}
+.stolen-banner strong{color:var(--bad);font-weight:800;letter-spacing:.04em;font-size:13px;text-transform:uppercase}
+.stolen-list{margin-top:8px;font-size:13px;color:var(--text);line-height:1.6}
+.stolen-item{font-weight:500}
+.hop-stolen-warn{margin-top:6px;padding:6px 10px;background:rgba(239,68,68,.14);border:1px solid rgba(239,68,68,.45);border-radius:8px;font-size:12px;color:var(--bad);font-weight:700}
+.hop-tag.stolen{background:rgba(220,38,38,.18);border-color:var(--bad);color:var(--bad);animation:stolen-pulse 2s ease-in-out infinite}
+.hop.is-stolen .hop-num{border-color:var(--bad);color:var(--bad)}
+
+/* USD inline */
+.amt-usd{font-weight:600;color:var(--acc2);font-size:13px}
+
+/* sankey */
+.sankey-wrap{padding:clamp(12px,2.5vw,20px);background:var(--panel);border:1px solid var(--line);border-radius:18px;overflow-x:auto;margin-bottom:24px}
+.sankey-svg{width:100%;height:auto;display:block;color:var(--text);min-width:560px}
+[data-theme="light"] .sankey-svg{color:var(--text)}
+
 .summary-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
 .s-stat{padding:14px;background:var(--panel2);border:1px solid var(--line);border-radius:12px}
 .s-stat-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin-bottom:4px}
@@ -283,6 +302,6 @@ button:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid var(-
   Built with 🧠 <strong>Xiaomi MiMo V2.5</strong> · <a href="https://github.com/gyoomei/mimotrace" target="_blank">GitHub</a> · <a href="https://eth.blockscout.com" target="_blank">Blockscout</a> · © 2026 MiMoTrace
 </footer>
 
-<script src="app.js?v=5"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>

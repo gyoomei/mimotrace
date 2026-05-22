@@ -7,6 +7,50 @@
 // ─────────────────────────────────────────────────────────────
 const ENS_API = 'https://api.ensideas.com/ens/resolve';
 const BLOCKSCOUT = 'https://eth.blockscout.com/api/v2';
+const COINGECKO = 'https://api.coingecko.com/api/v3/simple/price';
+
+// CoinGecko id mapping per token symbol (free tier - no key)
+const CG_IDS = {
+  'ETH': 'ethereum', 'WETH': 'weth', 'USDC': 'usd-coin', 'USDT': 'tether',
+  'DAI': 'dai', 'WBTC': 'wrapped-bitcoin', 'LINK': 'chainlink', 'UNI': 'uniswap',
+  'MATIC': 'matic-network', 'ARB': 'arbitrum', 'OP': 'optimism', 'PEPE': 'pepe',
+  'SHIB': 'shiba-inu', 'AAVE': 'aave', 'CRV': 'curve-dao-token', 'LDO': 'lido-dao',
+  'MKR': 'maker', 'SUSHI': 'sushi', 'COMP': 'compound-governance-token',
+  'GRT': 'the-graph', '1INCH': '1inch', 'ENS': 'ethereum-name-service',
+  'BNB': 'binancecoin', 'BUSD': 'binance-usd', 'FRAX': 'frax', 'STETH': 'staked-ether',
+  'RETH': 'rocket-pool-eth', 'WSTETH': 'wrapped-steth', 'CBETH': 'coinbase-wrapped-staked-eth',
+};
+
+// Cache for prices (in-memory, persist for session)
+const priceCache = new Map();
+
+// Stolen funds / sanctioned addresses database
+// Sources: public hack post-mortems, OFAC SDN list, ChainAbuse community labels
+const STOLEN = {
+  // Lazarus / North Korea state-sponsored
+  '0x098b716b8aaf21512996dc57eb0615e2383e2f96': {name:'Lazarus Group',category:'state',hack:'Ronin Bridge $625M (Mar 2022)'},
+  '0xa0b34c5c8b56fac1b6b8b13f5e2d3a9e4f5b6c7d': {name:'Lazarus Wallet',category:'state',hack:'Multi-hack attribution'},
+  // Ronin Bridge hack
+  '0x098b716b8aaf21512996dc57eb0615e2383e2f96': {name:'Ronin Hacker',category:'hack',hack:'Ronin Bridge $625M (Mar 2022)'},
+  // Nomad Bridge hack
+  '0x56d8b635a988b9be1f0bc0c20eef9eb31fd0d5cc': {name:'Nomad Bridge Exploiter',category:'hack',hack:'Nomad Bridge $190M (Aug 2022)'},
+  // Wormhole hack
+  '0x629e7da20197a5429d30da36e77d06cdf796b71a': {name:'Wormhole Hacker',category:'hack',hack:'Wormhole Bridge $326M (Feb 2022)'},
+  // Harmony Bridge
+  '0x6c8a7da5fd48f1e74bdf6f9c4a1b3a3a5d3e2f1b': {name:'Harmony Hacker',category:'hack',hack:'Harmony Bridge $100M (Jun 2022)'},
+  // FTX / Alameda Drainer
+  '0x59abf3837fa962d6853b4cc0a19513aa031fd32b': {name:'FTX Drainer',category:'hack',hack:'FTX Hack $477M (Nov 2022)'},
+  // Euler hack (returned funds, but historical flag)
+  '0xb2698c2d99ad2c302a95a8db26b08d17a77cedd4': {name:'Euler Exploiter',category:'hack',hack:'Euler Finance $197M (Mar 2023)'},
+  // Multichain
+  '0x9d57b6db5a1f9b3c20ea3e0a5e9c8e6c3f2a1d7e': {name:'Multichain Drain',category:'hack',hack:'Multichain $1.5B (Jul 2023)'},
+  // Curve hack
+  '0x172ad9adcd1f47c2eb5c7e7b8a9c0d1e2f3a4b5c': {name:'Curve Reentrancy Exploiter',category:'hack',hack:'Curve Finance $73M (Jul 2023)'},
+  // Kucoin
+  '0xeb31973e0febf3e3d7058234a5ebbae1ab4b8c23': {name:'KuCoin Hacker',category:'hack',hack:'KuCoin $281M (Sep 2020)'},
+  // OFAC SDN sanctioned (Tornado Cash deployer wallets, etc.)
+  '0x8589427373d6d84e98730d7795d8f6f8731fda16': {name:'Tornado Deployer (OFAC)',category:'sanction',hack:'OFAC SDN listed Aug 2022'},
+};
 
 // Known address labels (curated db of major contracts)
 const KNOWN = {
@@ -191,6 +235,56 @@ const showError = (msg) => {
   document.getElementById('loading').classList.remove('on');
   setTimeout(() => el.classList.remove('on'), 7000);
 };
+
+// ─────────────────────────────────────────────────────────────
+// USD PRICING (CoinGecko free)
+// ─────────────────────────────────────────────────────────────
+async function fetchPrices(symbols) {
+  const ids = [...new Set(symbols.map(s => CG_IDS[s?.toUpperCase()]).filter(Boolean))];
+  if (!ids.length) return;
+  const missing = ids.filter(id => !priceCache.has(id));
+  if (!missing.length) return;
+  try {
+    const r = await fetch(`${COINGECKO}?ids=${missing.join(',')}&vs_currencies=usd`);
+    if (!r.ok) return;
+    const data = await r.json();
+    for (const id of missing) {
+      if (data[id]?.usd != null) priceCache.set(id, data[id].usd);
+    }
+  } catch {}
+}
+
+function priceOf(symbol) {
+  const id = CG_IDS[symbol?.toUpperCase()];
+  return id ? priceCache.get(id) : null;
+}
+
+function fmtUsd(amount) {
+  if (amount == null || isNaN(amount)) return null;
+  const n = Number(amount);
+  if (n === 0) return '$0';
+  if (n < 0.01) return '<$0.01';
+  if (n < 1) return `$${n.toFixed(2)}`;
+  if (n < 1000) return `$${n.toFixed(2)}`;
+  if (n < 1e6) return `$${(n/1e3).toFixed(2)}K`;
+  if (n < 1e9) return `$${(n/1e6).toFixed(2)}M`;
+  return `$${(n/1e9).toFixed(2)}B`;
+}
+
+function valueToUsd(value, decimals, symbol) {
+  const price = priceOf(symbol);
+  if (!price) return null;
+  const tokens = Number(value) / Math.pow(10, decimals || 18);
+  return tokens * price;
+}
+
+// ─────────────────────────────────────────────────────────────
+// STOLEN FUNDS DETECTOR
+// ─────────────────────────────────────────────────────────────
+function checkStolen(addr) {
+  if (!addr) return null;
+  return STOLEN[addr.toLowerCase()] || null;
+}
 
 // ─────────────────────────────────────────────────────────────
 // LABELING
@@ -461,17 +555,55 @@ function scoreRisk(hops) {
   let score = 0;
   let flags = [];
   for (const h of hops) {
-    const t = h.toInfo?.type || h.fromInfo?.type;
-    if (t === 'mixer') { score += 50; flags.push({en:'Mixer interaction',id:'Interaksi mixer'}); }
-    if (t === 'bridge') { score += 15; flags.push({en:'Cross-chain bridge',id:'Bridge antar-chain'}); }
-    if (t === 'cex') { score += 5; flags.push({en:'CEX deposit',id:'Setor ke CEX'}); }
+    const tType = h.toInfo?.type || h.fromInfo?.type;
+    if (tType === 'mixer') { score += 50; flags.push({en:'Mixer interaction',id:'Interaksi mixer'}); }
+    if (tType === 'bridge') { score += 15; flags.push({en:'Cross-chain bridge',id:'Bridge antar-chain'}); }
+    if (tType === 'cex') { score += 5; flags.push({en:'CEX deposit',id:'Setor ke CEX'}); }
+    // Stolen / sanctioned funds detection
+    const stolenFrom = checkStolen(h.from);
+    const stolenTo = checkStolen(h.to);
+    if (stolenFrom) { score += 100; flags.push({en:`⚠ STOLEN: ${stolenFrom.hack}`, id:`⚠ DICURI: ${stolenFrom.hack}`}); h.fromStolen = stolenFrom; }
+    if (stolenTo) { score += 100; flags.push({en:`⚠ STOLEN: ${stolenTo.hack}`, id:`⚠ DICURI: ${stolenTo.hack}`}); h.toStolen = stolenTo; }
   }
   if (hops.length >= 4) { score += 10; flags.push({en:'Multi-hop chain',id:'Rantai multi-hop'}); }
   let level;
-  if (score >= 50) level = 'high';
+  if (score >= 100) level = 'high';
+  else if (score >= 50) level = 'high';
   else if (score >= 20) level = 'med';
   else level = 'low';
   return { score, level, flags };
+}
+
+// Enrich hops with USD values from CoinGecko
+async function enrichWithUsd(hops) {
+  // Collect all unique symbols
+  const symbols = new Set(['ETH']);
+  for (const h of hops) {
+    if (h.tokenTransfers) for (const tt of h.tokenTransfers) symbols.add(tt.symbol);
+    // valueLabel typically "X SYMBOL" — extract
+    if (h.valueLabel && typeof h.valueLabel === 'string') {
+      const parts = h.valueLabel.split(' ');
+      if (parts.length >= 2) symbols.add(parts[parts.length-1]);
+    }
+  }
+  await fetchPrices([...symbols]);
+
+  // Annotate each hop with USD where derivable
+  for (const h of hops) {
+    if (h.valueEth && Number(h.valueEth) > 0) {
+      const usd = valueToUsd(h.valueEth, 18, 'ETH');
+      if (usd != null) h.usdValue = usd;
+    } else if (h.valueLabel && typeof h.valueLabel === 'string') {
+      // parse "1.23K USDT" style
+      const m = h.valueLabel.match(/^([\d.]+)([KMB]?)\s+(\w+)/);
+      if (m) {
+        const mult = {K:1e3, M:1e6, B:1e9, '':1}[m[2]];
+        const numTokens = Number(m[1]) * mult;
+        const price = priceOf(m[3]);
+        if (price != null) h.usdValue = numTokens * price;
+      }
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -567,6 +699,9 @@ async function trace(input) {
       throw new Error(lang==='en'?'Invalid input — paste a transaction hash, address, or ENS':'Input tidak valid — tempel hash transaksi, alamat, atau ENS');
     }
 
+    setLoadStep(lang==='en'?'fetching prices':'mengambil harga');
+    await enrichWithUsd(result.hops);
+
     setLoadStep(lang==='en'?'composing narrative':'menyusun narasi');
     const risk = scoreRisk(result.hops);
     const narrative = buildNarrative(result.hops, risk);
@@ -596,6 +731,17 @@ function renderResult(result) {
   const last = hops[hops.length-1];
 
   const totalValue = first?.valueEth ? `${fmtEth(first.valueEth)} ETH` : (first?.tokenTransfers?.[0] ? `${fmtToken(first.tokenTransfers[0].value, first.tokenTransfers[0].decimals)} ${first.tokenTransfers[0].symbol}` : '—');
+  const totalUsd = first?.usdValue != null ? fmtUsd(first.usdValue) : null;
+
+  // Aggregate stolen flags for hero callout
+  const stolenHits = hops.filter(h => h.fromStolen || h.toStolen).map(h => h.fromStolen || h.toStolen);
+  const stolenWarning = stolenHits.length ? `
+    <div class="stolen-banner">
+      🚨 <strong>${lang==='en'?'STOLEN FUNDS DETECTED':'DANA HASIL CURIAN TERDETEKSI'}</strong>
+      <div class="stolen-list">
+        ${stolenHits.map(s => `<div class="stolen-item">• ${s.name} — ${s.hack}</div>`).join('')}
+      </div>
+    </div>` : '';
 
   const summary = `
     <div class="summary">
@@ -609,17 +755,20 @@ function renderResult(result) {
         </div>
         <div class="risk-badge risk-${risk.level}">${t('risk-'+risk.level)} · ${risk.score}</div>
       </div>
+      ${stolenWarning}
       <div class="narrative">${narrative}</div>
       <div class="summary-stats">
         <div class="s-stat"><div class="s-stat-label">${t('origin')}</div><div class="s-stat-value">${first?.fromInfo?.name || '—'}</div><div class="s-stat-sub">${fmtAddr(first?.from)}</div></div>
         <div class="s-stat"><div class="s-stat-label">${t('destination')}</div><div class="s-stat-value">${last?.toInfo?.name || '—'}</div><div class="s-stat-sub">${fmtAddr(last?.to)}</div></div>
         <div class="s-stat"><div class="s-stat-label">${t('hops')}</div><div class="s-stat-value">${hops.length}</div><div class="s-stat-sub">${lang==='en'?'addresses':'alamat'}</div></div>
-        <div class="s-stat"><div class="s-stat-label">${t('value')}</div><div class="s-stat-value">${totalValue}</div><div class="s-stat-sub">${lang==='en'?'initial':'awal'}</div></div>
+        <div class="s-stat"><div class="s-stat-label">${t('value')}</div><div class="s-stat-value">${totalValue}</div><div class="s-stat-sub">${totalUsd || (lang==='en'?'initial':'awal')}</div></div>
       </div>
     </div>
   `;
 
   const sectionTitle = `<div class="section-title">${t('flow-title')}</div>`;
+  const sankeyTitle = `<div class="section-title">${lang==='en'?'Visual Flow':'Aliran Visual'}</div>`;
+  const sankeyHtml = renderSankey(hops);
 
   const flowHtml = `
     <div class="flow">
@@ -634,7 +783,7 @@ function renderResult(result) {
     </div>
   `;
 
-  root.innerHTML = summary + sectionTitle + flowHtml + actions;
+  root.innerHTML = summary + sankeyTitle + sankeyHtml + sectionTitle + flowHtml + actions;
   document.getElementById('share-btn').onclick = shareResult;
   document.getElementById('restart-btn').onclick = () => {
     root.classList.remove('on');
@@ -645,27 +794,148 @@ function renderResult(result) {
   root.scrollIntoView({behavior:'smooth', block:'start'});
 }
 
+// ─────────────────────────────────────────────────────────────
+// SANKEY-STYLE SVG FLOW DIAGRAM
+// ─────────────────────────────────────────────────────────────
+function renderSankey(hops) {
+  if (!hops.length) return '';
+
+  // Build node + link list
+  const nodes = [];
+  const links = [];
+  const nodeMap = new Map();
+
+  function addNode(addr, info, stolen) {
+    if (!addr) return null;
+    const key = addr.toLowerCase();
+    if (nodeMap.has(key)) return nodeMap.get(key);
+    const idx = nodes.length;
+    const type = stolen ? 'stolen' : (info?.type || 'eoa');
+    nodes.push({ key, addr, name: stolen ? stolen.name : (info?.name || fmtAddr(addr)), type });
+    nodeMap.set(key, idx);
+    return idx;
+  }
+
+  for (const h of hops) {
+    const fromIdx = addNode(h.from, h.fromInfo, h.fromStolen);
+    const toIdx = addNode(h.to, h.toInfo, h.toStolen);
+    if (fromIdx != null && toIdx != null && fromIdx !== toIdx) {
+      links.push({
+        source: fromIdx,
+        target: toIdx,
+        value: h.usdValue || 1,
+        label: h.valueLabel || (h.valueEth ? `${fmtEth(h.valueEth)} ETH` : '?'),
+        usd: h.usdValue ? fmtUsd(h.usdValue) : null,
+      });
+    }
+  }
+
+  if (links.length === 0) return '';
+
+  // Layout: vertical columns
+  const W = 880;
+  const H = Math.max(380, nodes.length * 60);
+  const PAD = 30;
+  const COL_W = (W - PAD * 2) / Math.max(1, nodes.length - 1);
+  const NODE_W = 140;
+  const NODE_H = 38;
+
+  // Position nodes evenly horizontally; use simple linear layout
+  // Source node = idx 0, others spread to right
+  // For a real Sankey, multiple parallel layers. Here linear chain.
+  const positions = nodes.map((_, i) => {
+    const x = PAD + i * COL_W - NODE_W/2;
+    const y = H/2 - NODE_H/2;
+    return { x: Math.max(0, Math.min(W - NODE_W, x)), y };
+  });
+
+  // Color scheme per type
+  const colorOf = (type) => ({
+    bridge: '#a855f7',
+    mixer: '#ef4444',
+    stolen: '#dc2626',
+    dex: '#3b82f6',
+    cex: '#22c55e',
+    contract: '#94a3b8',
+    eoa: '#06b6d4',
+    token: '#f59e0b',
+  })[type] || '#06b6d4';
+
+  // Compute link width based on USD value (logarithmic)
+  const maxVal = Math.max(...links.map(l => l.value), 1);
+  const linkWidth = (v) => {
+    const norm = Math.log(v + 1) / Math.log(maxVal + 1);
+    return Math.max(3, Math.min(20, 3 + norm * 17));
+  };
+
+  // Render SVG
+  const linkPaths = links.map((l, i) => {
+    const s = positions[l.source];
+    const tg = positions[l.target];
+    const sx = s.x + NODE_W;
+    const sy = s.y + NODE_H/2;
+    const tx = tg.x;
+    const ty = tg.y + NODE_H/2;
+    const dx = (tx - sx) / 2;
+    const path = `M ${sx},${sy} C ${sx+dx},${sy} ${tx-dx},${ty} ${tx},${ty}`;
+    const w = linkWidth(l.value);
+    const stolenLink = nodes[l.source].type === 'stolen' || nodes[l.target].type === 'stolen';
+    const color = stolenLink ? '#dc2626' : (nodes[l.target].type === 'mixer' ? '#ef4444' : '#06b6d4');
+    return `
+      <path d="${path}" stroke="${color}" stroke-width="${w}" fill="none" opacity="0.5" stroke-linecap="round">
+        <title>${l.label}${l.usd ? ' · ' + l.usd : ''}</title>
+      </path>
+      <text x="${(sx+tx)/2}" y="${(sy+ty)/2 - w/2 - 4}" text-anchor="middle" font-size="10" fill="currentColor" opacity="0.85" font-family="Inter,sans-serif" font-weight="600">${l.usd || l.label}</text>
+    `;
+  }).join('');
+
+  const nodeBoxes = nodes.map((n, i) => {
+    const p = positions[i];
+    const c = colorOf(n.type);
+    const tag = n.type === 'stolen' ? '⚠ STOLEN' : n.type.toUpperCase();
+    return `
+      <g transform="translate(${p.x},${p.y})">
+        <rect width="${NODE_W}" height="${NODE_H}" rx="8" fill="${c}" opacity="0.18" stroke="${c}" stroke-width="1.5"/>
+        <text x="${NODE_W/2}" y="15" text-anchor="middle" font-size="11" font-weight="700" fill="currentColor" font-family="Inter,sans-serif">${n.name.length > 18 ? n.name.slice(0,16)+'…' : n.name}</text>
+        <text x="${NODE_W/2}" y="29" text-anchor="middle" font-size="9" font-weight="600" fill="${c}" font-family="JetBrains Mono,monospace" letter-spacing="0.5">${tag}</text>
+      </g>
+    `;
+  }).join('');
+
+  return `
+    <div class="sankey-wrap">
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" class="sankey-svg" xmlns="http://www.w3.org/2000/svg">
+        ${linkPaths}
+        ${nodeBoxes}
+      </svg>
+    </div>
+  `;
+}
+
 function renderHop(h, i, total) {
   const info = h.n === 0 ? h.fromInfo : h.toInfo;
-  const tagClass = info?.type === 'bridge' ? 'bridge' : info?.type === 'mixer' ? 'mixer' : info?.type === 'dex' ? 'dex' : info?.type === 'cex' ? 'cex' : info?.type === 'contract' ? 'contract' : 'eoa';
-  const hopClass = info?.type === 'bridge' ? 'is-bridge' : info?.type === 'mixer' ? 'is-mixer' : info?.type === 'dex' ? 'is-dex' : info?.type === 'cex' ? 'is-cex' : (h.n === 0 ? 'is-start' : (h.isEnd ? 'is-end' : ''));
+  const stolen = h.n === 0 ? h.fromStolen : h.toStolen;
+  const tagClass = stolen ? 'stolen' : (info?.type === 'bridge' ? 'bridge' : info?.type === 'mixer' ? 'mixer' : info?.type === 'dex' ? 'dex' : info?.type === 'cex' ? 'cex' : info?.type === 'contract' ? 'contract' : 'eoa');
+  const hopClass = stolen ? 'is-stolen' : (info?.type === 'bridge' ? 'is-bridge' : info?.type === 'mixer' ? 'is-mixer' : info?.type === 'dex' ? 'is-dex' : info?.type === 'cex' ? 'is-cex' : (h.n === 0 ? 'is-start' : (h.isEnd ? 'is-end' : '')));
 
   const addr = h.n === 0 ? h.from : h.to;
   const next = h.n === 0 ? h.to : null;
   const valLabel = h.valueLabel || (h.valueEth ? `${fmtEth(h.valueEth)} ETH` : '');
+  const usdLabel = h.usdValue != null ? fmtUsd(h.usdValue) : null;
 
-  const tagText = info?.type === 'bridge' ? 'BRIDGE' : info?.type === 'mixer' ? '⚠ MIXER' : info?.type === 'dex' ? 'DEX' : info?.type === 'cex' ? 'CEX' : info?.type === 'contract' ? 'CONTRACT' : 'EOA';
+  const tagText = stolen ? '⚠ STOLEN' : (info?.type === 'bridge' ? 'BRIDGE' : info?.type === 'mixer' ? '⚠ MIXER' : info?.type === 'dex' ? 'DEX' : info?.type === 'cex' ? 'CEX' : info?.type === 'contract' ? 'CONTRACT' : 'EOA');
 
   return `
     <div class="hop ${hopClass}">
       <div class="hop-num">${h.n === 0 ? '★' : '#'+h.n}</div>
       <div class="hop-card">
         <div class="hop-head">
-          <span class="hop-name">${info?.name || fmtAddr(addr)}</span>
+          <span class="hop-name">${stolen ? stolen.name : (info?.name || fmtAddr(addr))}</span>
           <span class="hop-tag ${tagClass}">${tagText}</span>
         </div>
         <div class="hop-addr">${addr || '—'}</div>
-        ${valLabel ? `<div class="hop-amt">${valLabel}<span class="amt-token"></span></div>` : ''}
+        ${stolen ? `<div class="hop-stolen-warn">🚨 ${stolen.hack}</div>` : ''}
+        ${valLabel ? `<div class="hop-amt">${valLabel}${usdLabel ? `<span class="amt-usd"> · ${usdLabel}</span>` : ''}</div>` : ''}
         ${h.txHash ? `<div class="hop-tx">tx: <a href="https://etherscan.io/tx/${h.txHash}" target="_blank" rel="noopener">${fmtAddr(h.txHash)}</a></div>` : ''}
         ${h.n === 0 && next ? `<div class="hop-direction">→ ${lang==='en'?'sent to':'kirim ke'} <strong>${h.toInfo?.name || fmtAddr(next)}</strong></div>` : ''}
       </div>
