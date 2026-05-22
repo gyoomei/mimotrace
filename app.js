@@ -297,16 +297,19 @@ async function traceFromTx(hash, maxDepth) {
   // priority: largest token transfer recipient, or tx.to
   let currentAddr = toAddr;
   let lastValueEth = tx.value || '0';
-  let lastValueLabel = `${fmtEth(tx.value || 0)} ETH`;
-  // visited only tracks the upstream addresses to prevent loops, not the next-to-follow
+  let lastValueLabel = (tx.value && Number(tx.value) > 0) ? `${fmtEth(tx.value)} ETH` : null;
+
+  // visited only tracks the upstream addresses to prevent loops
   let visited = new Set([fromAddr]);
 
   // If toAddr is a known DEX/router and there's a token transfer out, follow the token recipient
   const toLabel = labelOf(toAddr);
   if (toLabel && (toLabel.type === 'dex' || toLabel.type === 'bridge') && tokenTransfers.length > 0) {
-    // find biggest transfer to a non-zero, non-router address
     const out = tokenTransfers
-      .filter(tt => tt.to?.hash?.toLowerCase() !== toAddr && tt.to?.hash?.toLowerCase() !== '0x0000000000000000000000000000000000000000' && tt.to?.hash?.toLowerCase() !== fromAddr)
+      .filter(tt => {
+        const t = tt.to?.hash?.toLowerCase();
+        return t && t !== toAddr && t !== '0x0000000000000000000000000000000000000000' && t !== fromAddr;
+      })
       .sort((a,b) => Number(b.total?.value || 0) - Number(a.total?.value || 0));
     if (out[0]) {
       currentAddr = out[0].to.hash.toLowerCase();
@@ -314,29 +317,48 @@ async function traceFromTx(hash, maxDepth) {
       lastValueLabel = `${fmtToken(out[0].total?.value, out[0].total?.decimals)} ${out[0].token?.symbol || '?'}`;
     }
   }
-  visited.add(toAddr);
 
-  // Recursive trace
-  for (let d = 1; d <= maxDepth; d++) {
+  // For mixer / cex destination, the toAddr IS the endpoint - record it and stop
+  if (toLabel && (toLabel.type === 'mixer' || toLabel.type === 'cex')) {
+    // The first hop already covers this transfer. Don't add a second redundant hop.
+    return { hops, originHash: hash };
+  }
+
+  visited.add(toAddr);
+  if (currentAddr !== toAddr) visited.add(currentAddr);  // recipient already chosen
+
+  // First downstream hop is the one we already chose (currentAddr)
+  // Add it as hop #1 if it's not the same as toAddr (otherwise toAddr is the endpoint)
+  if (currentAddr && currentAddr !== toAddr) {
+    const known = labelOf(currentAddr);
+    const addrInfo = await fetchAddrInfo(currentAddr);
+    hops.push({
+      n: 1,
+      from: toAddr,
+      to: currentAddr,
+      fromInfo: classifyAddr(tx.to, toAddr),
+      toInfo: classifyAddr(addrInfo, currentAddr),
+      valueLabel: lastValueLabel,
+    });
+
+    // Stop if mixer/cex
+    if (known && (known.type === 'cex' || known.type === 'mixer')) {
+      return { hops, originHash: hash };
+    }
+  }
+
+  // Recursive trace from hop 2 onwards
+  for (let d = (currentAddr && currentAddr !== toAddr ? 2 : 1); d <= maxDepth; d++) {
     if (!currentAddr) break;
     const known = labelOf(currentAddr);
-    // Stop if we hit a CEX or mixer endpoint
     if (known && (known.type === 'cex' || known.type === 'mixer')) {
-      hops.push({
-        n: d,
-        from: hops[hops.length-1].to,
-        to: currentAddr,
-        toInfo: known,
-        valueLabel: lastValueLabel,
-        isEnd: true,
-      });
+      // already handled above; safety
       break;
     }
     setLoadStep(lang==='en'?`hop ${d}/${maxDepth}`:`hop ke-${d}/${maxDepth}`);
     const addrInfo = await fetchAddrInfo(currentAddr);
     const outgoing = await fetchAddrTokenTransfers(currentAddr, 10);
 
-    // Find next hop = recent outgoing transfer (after this addr received) - skip already visited
     const recentOut = outgoing.find(tt => {
       const f = tt.from?.hash?.toLowerCase();
       const to = tt.to?.hash?.toLowerCase();
@@ -359,8 +381,10 @@ async function traceFromTx(hash, maxDepth) {
       visited.add(nextAddr);
       currentAddr = nextAddr;
       lastValueLabel = `${fmtToken(recentOut.total?.value, recentOut.total?.decimals)} ${recentOut.token?.symbol || '?'}`;
+      // Stop if next is mixer/cex
+      const nextKnown = labelOf(nextAddr);
+      if (nextKnown && (nextKnown.type === 'cex' || nextKnown.type === 'mixer')) break;
     } else {
-      // no further outgoing — final holder
       hops.push({
         n: d,
         from: hops[hops.length-1].to,
