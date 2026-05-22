@@ -298,14 +298,15 @@ async function traceFromTx(hash, maxDepth) {
   let currentAddr = toAddr;
   let lastValueEth = tx.value || '0';
   let lastValueLabel = `${fmtEth(tx.value || 0)} ETH`;
-  let visited = new Set([fromAddr, toAddr]);
+  // visited only tracks the upstream addresses to prevent loops, not the next-to-follow
+  let visited = new Set([fromAddr]);
 
   // If toAddr is a known DEX/router and there's a token transfer out, follow the token recipient
   const toLabel = labelOf(toAddr);
   if (toLabel && (toLabel.type === 'dex' || toLabel.type === 'bridge') && tokenTransfers.length > 0) {
     // find biggest transfer to a non-zero, non-router address
     const out = tokenTransfers
-      .filter(tt => tt.to?.hash?.toLowerCase() !== toAddr && tt.to?.hash?.toLowerCase() !== '0x0000000000000000000000000000000000000000')
+      .filter(tt => tt.to?.hash?.toLowerCase() !== toAddr && tt.to?.hash?.toLowerCase() !== '0x0000000000000000000000000000000000000000' && tt.to?.hash?.toLowerCase() !== fromAddr)
       .sort((a,b) => Number(b.total?.value || 0) - Number(a.total?.value || 0));
     if (out[0]) {
       currentAddr = out[0].to.hash.toLowerCase();
@@ -313,10 +314,11 @@ async function traceFromTx(hash, maxDepth) {
       lastValueLabel = `${fmtToken(out[0].total?.value, out[0].total?.decimals)} ${out[0].token?.symbol || '?'}`;
     }
   }
+  visited.add(toAddr);
 
   // Recursive trace
   for (let d = 1; d <= maxDepth; d++) {
-    if (!currentAddr || visited.has(currentAddr)) break;
+    if (!currentAddr) break;
     const known = labelOf(currentAddr);
     // Stop if we hit a CEX or mixer endpoint
     if (known && (known.type === 'cex' || known.type === 'mixer')) {
@@ -332,13 +334,14 @@ async function traceFromTx(hash, maxDepth) {
     }
     setLoadStep(lang==='en'?`hop ${d}/${maxDepth}`:`hop ke-${d}/${maxDepth}`);
     const addrInfo = await fetchAddrInfo(currentAddr);
-    const outgoing = await fetchAddrTokenTransfers(currentAddr, 5);
+    const outgoing = await fetchAddrTokenTransfers(currentAddr, 10);
 
-    // Find next hop = recent outgoing transfer (after this addr received)
-    const recentOut = outgoing.find(tt =>
-      tt.from?.hash?.toLowerCase() === currentAddr &&
-      tt.to?.hash?.toLowerCase() !== currentAddr
-    );
+    // Find next hop = recent outgoing transfer (after this addr received) - skip already visited
+    const recentOut = outgoing.find(tt => {
+      const f = tt.from?.hash?.toLowerCase();
+      const to = tt.to?.hash?.toLowerCase();
+      return f === currentAddr && to && to !== currentAddr && !visited.has(to);
+    });
 
     if (recentOut) {
       const nextAddr = recentOut.to.hash.toLowerCase();
@@ -348,7 +351,7 @@ async function traceFromTx(hash, maxDepth) {
         from: currentAddr,
         to: nextAddr,
         fromInfo: classifyAddr(addrInfo, currentAddr),
-        toInfo: classifyAddr({}, nextAddr) || nextInfo,
+        toInfo: nextInfo,
         valueLabel: `${fmtToken(recentOut.total?.value, recentOut.total?.decimals)} ${recentOut.token?.symbol || '?'}`,
         txHash: recentOut.tx_hash,
         timestamp: recentOut.timestamp,
@@ -357,7 +360,7 @@ async function traceFromTx(hash, maxDepth) {
       currentAddr = nextAddr;
       lastValueLabel = `${fmtToken(recentOut.total?.value, recentOut.total?.decimals)} ${recentOut.token?.symbol || '?'}`;
     } else {
-      // dead end - holder
+      // no further outgoing — final holder
       hops.push({
         n: d,
         from: hops[hops.length-1].to,
