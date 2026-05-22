@@ -79,6 +79,10 @@ const I18N = {
     'flow-title': 'Trace Flow',
     'btn-share': 'Share Trace',
     'btn-restart': 'New Trace',
+    'btn-trace-mine': 'Trace My Wallet',
+    'connect': 'Connect',
+    'connecting': 'Connecting…',
+    'connect-fail': 'No wallet found. Install MetaMask.',
     'origin': 'Origin',
     'destination': 'Destination',
     'hops': 'Hops Traced',
@@ -102,6 +106,10 @@ const I18N = {
     'flow-title': 'Aliran Trace',
     'btn-share': 'Bagi Trace',
     'btn-restart': 'Trace Baru',
+    'btn-trace-mine': 'Lacak Walletku',
+    'connect': 'Hubungkan',
+    'connecting': 'Menghubungkan…',
+    'connect-fail': 'Wallet tidak ditemukan. Pasang MetaMask.',
     'origin': 'Asal',
     'destination': 'Tujuan',
     'hops': 'Hop Dilacak',
@@ -645,6 +653,85 @@ function shareResult() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// WALLET CONNECT (MetaMask / EIP-1193)
+// ─────────────────────────────────────────────────────────────
+let connectedAddr = null;
+
+async function connectWallet() {
+  const btn = document.getElementById('connect-btn');
+  const txt = btn.querySelector('.connect-text');
+
+  if (!window.ethereum) {
+    showError(t('connect-fail'));
+    window.open('https://metamask.io/download/', '_blank');
+    return;
+  }
+
+  if (connectedAddr) {
+    // Already connected — clicking traces the wallet
+    document.getElementById('hash-input').value = connectedAddr;
+    trace(connectedAddr);
+    return;
+  }
+
+  try {
+    txt.textContent = t('connecting');
+    const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+    if (!accounts || !accounts[0]) throw new Error('No accounts');
+    connectedAddr = accounts[0].toLowerCase();
+    btn.classList.add('connected');
+    txt.classList.add('is-addr');
+    txt.textContent = fmtAddr(connectedAddr);
+    btn.title = `${t('btn-trace-mine')} (${connectedAddr})`;
+    btn.querySelector('.connect-icon').textContent = '✓';
+
+    // Listen for account changes
+    window.ethereum.on?.('accountsChanged', (accs) => {
+      if (!accs[0]) {
+        // Disconnected
+        connectedAddr = null;
+        btn.classList.remove('connected');
+        txt.classList.remove('is-addr');
+        txt.textContent = t('connect');
+        btn.querySelector('.connect-icon').textContent = '🦊';
+      } else {
+        connectedAddr = accs[0].toLowerCase();
+        txt.textContent = fmtAddr(connectedAddr);
+      }
+    });
+
+    // Auto-trace immediately upon connect
+    document.getElementById('hash-input').value = connectedAddr;
+    trace(connectedAddr);
+  } catch (e) {
+    txt.textContent = t('connect');
+    if (e.code === 4001) {
+      // User rejected
+    } else {
+      showError(e.message || 'Connect failed');
+    }
+  }
+}
+
+// Restore previous connection silently (eth_accounts doesn't prompt)
+async function tryRestoreConnection() {
+  if (!window.ethereum) return;
+  try {
+    const accs = await window.ethereum.request({ method: 'eth_accounts' });
+    if (accs && accs[0]) {
+      connectedAddr = accs[0].toLowerCase();
+      const btn = document.getElementById('connect-btn');
+      const txt = btn.querySelector('.connect-text');
+      btn.classList.add('connected');
+      txt.classList.add('is-addr');
+      txt.textContent = fmtAddr(connectedAddr);
+      btn.title = `${t('btn-trace-mine')} (${connectedAddr})`;
+      btn.querySelector('.connect-icon').textContent = '✓';
+    }
+  } catch {}
+}
+
+// ─────────────────────────────────────────────────────────────
 // EVENTS
 // ─────────────────────────────────────────────────────────────
 document.getElementById('go-btn').onclick = () => trace(document.getElementById('hash-input').value);
@@ -657,6 +744,10 @@ document.querySelectorAll('.ex-pill').forEach(b =>
     trace(b.dataset.hash);
   }
 );
+document.getElementById('connect-btn').onclick = connectWallet;
+
+// Restore wallet connection on page load
+tryRestoreConnection();
 
 // Auto-load if URL hash
 if (location.hash) {
