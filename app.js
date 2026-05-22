@@ -222,6 +222,9 @@ async function blockscout(path) {
 }
 
 async function fetchTx(hash) {
+  if (!hash || !/^0x[a-f0-9]{64}$/i.test(hash)) {
+    throw new Error(lang==='en'?'Invalid transaction hash':'Hash transaksi tidak valid');
+  }
   return blockscout(`/transactions/${hash}`);
 }
 
@@ -233,11 +236,13 @@ async function fetchTxTokenTransfers(hash) {
 }
 
 async function fetchAddrInfo(addr) {
+  if (!addr || !/^0x[a-f0-9]{40}$/i.test(addr)) return null;
   try { return await blockscout(`/addresses/${addr}`); }
   catch { return null; }
 }
 
 async function fetchOutgoing(addr, limit = 10) {
+  if (!addr || !/^0x[a-f0-9]{40}$/i.test(addr)) return [];
   // Get most recent outgoing native + token transfers
   try {
     const r = await blockscout(`/addresses/${addr}/transactions`);
@@ -251,6 +256,7 @@ async function fetchOutgoing(addr, limit = 10) {
 }
 
 async function fetchAddrTokenTransfers(addr, limit = 20) {
+  if (!addr || !/^0x[a-f0-9]{40}$/i.test(addr)) return [];
   try {
     const r = await blockscout(`/addresses/${addr}/token-transfers`);
     return (r.items || []).slice(0, limit);
@@ -413,14 +419,39 @@ async function traceFromAddress(addr, maxDepth) {
   // Trace outgoing flows from an address
   setLoadStep(lang==='en'?'fetching outgoing flows':'mengambil aliran keluar');
   const fromInfo = await fetchAddrInfo(addr);
-  const transfers = await fetchAddrTokenTransfers(addr, 1);
-  if (!transfers.length) {
-    // try native
-    const txs = await fetchOutgoing(addr, 1);
-    if (!txs.length) throw new Error(lang==='en'?'No outgoing transactions found':'Tidak ada transaksi keluar');
-    return await traceFromTx(txs[0].hash, maxDepth);
+
+  // Try token transfers first, then native txs — find first one with a usable hash
+  const transfers = await fetchAddrTokenTransfers(addr, 5);
+  for (const tt of transfers) {
+    const f = tt.from?.hash?.toLowerCase();
+    if (f === addr.toLowerCase() && tt.tx_hash) {
+      try {
+        return await traceFromTx(tt.tx_hash, maxDepth);
+      } catch { /* try next */ }
+    }
   }
-  return await traceFromTx(transfers[0].tx_hash, maxDepth);
+
+  // Fallback: native outgoing tx
+  const txs = await fetchOutgoing(addr, 5);
+  for (const tx of txs) {
+    if (tx.hash) {
+      try { return await traceFromTx(tx.hash, maxDepth); }
+      catch { /* try next */ }
+    }
+  }
+
+  // Last resort: build a single hop showing the wallet
+  const hops = [{
+    n: 0,
+    from: addr.toLowerCase(),
+    to: addr.toLowerCase(),
+    fromInfo: classifyAddr(fromInfo, addr),
+    toInfo: classifyAddr(fromInfo, addr),
+    valueLabel: lang==='en' ? 'No outgoing transfers found' : 'Tidak ada transfer keluar',
+    isStart: true,
+    isEnd: true,
+  }];
+  return { hops, originHash: addr };
 }
 
 // ─────────────────────────────────────────────────────────────
